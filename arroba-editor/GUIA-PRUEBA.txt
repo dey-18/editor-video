@@ -1,0 +1,17 @@
+ARROBA EDITOR — PRUEBA DE LA VERSIÓN ACTUAL
+
+1. Abre el acceso directo Arroba Editor de la carpeta video-test.
+2. En Cuenta e IA, configura la API key y el modelo de OpenRouter; usa la comprobación de conexión. Esta configuración no equivale a iniciar sesión en una cuenta de suscripción.
+3. Pulsa Preparar edición automática y selecciona una grabación terminada.
+4. Elige quitar silencios, intensidad de los cortes, idioma, subtítulos y la pista de audio. Los subtítulos locales requieren el modelo descargado.
+5. Pulsa Preparar. Se muestra la etapa del proceso; puedes solicitar Cancelar.
+6. Lee el resumen de duración, cortes y subtítulos. Pulsa Revisar montaje.
+7. Abre Ruben-bot para escribir una instrucción, por ejemplo: Añade un título que diga Mi video desde el segundo 0 durante 2 segundos.
+8. Revisa la propuesta y pulsa Aplicar cambios. Ctrl+Z deshace el último cambio. El chat registra aplicar, deshacer y rehacer.
+9. Exporta cuando hayas revisado el video. El archivo original se conserva.
+
+Las conversaciones se guardan por proyecto en este equipo. Para responder, OpenRouter recibe tu mensaje, el historial reciente y un resumen del proyecto. La generación de subtítulos es local; la corrección con IA usa el servicio configurado cuando está habilitada.
+
+La aplicación se abre sin terminal. El monitor de compilación es una herramienta de desarrollo y no forma parte del flujo de edición. El acceso directo abre la última versión compilada disponible; actualizar el código fuente no modifica una aplicación que ya está abierta.
+
+Pendiente para distribución: instalador independiente, pruebas en Windows limpio, cuentas y suscripciones mediante backend. No se ha implementado el cobro ni el inicio de sesión por correo.

@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+build/
+dist/
+test-output/
+*.spec
+installed-contract.json
+*.log
+projects/
+runtime/
+build-state.json
+.cancel-*.flag
+
+
+# Local build status and one-off repair utility
+integrated-build-status.txt
+repair_current.py

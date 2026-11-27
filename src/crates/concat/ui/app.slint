@@ -10,6 +10,7 @@
 // embeds the same five so a title is set in the face the interface is.
 // Licensed under the SIL Open Font License; see LICENSE-HankenGrotesk.txt.
 import { I18n } from "i18n.slint";
+import { Button, LineEdit, CheckBox, ComboBox, SpinBox } from "std-widgets.slint";
 import "../../concat-text/fonts/HankenGrotesk-Regular.ttf";
 import "../../concat-text/fonts/HankenGrotesk-Medium.ttf";
 import "../../concat-text/fonts/HankenGrotesk-SemiBold.ttf";
@@ -188,8 +189,10 @@ export {
     VoiceCardData,
     NewVoiceData,
 }
+export struct RubenMessage { user: bool, text: string }
+
 export component App inherits Window {
-    title: "Concat";
+    title: "Arroba Editor";
     // The taskbar's and Alt-Tab's picture on Windows, and the window
     // list's on X11. A Mac takes its Dock icon from the bundle and ignores
     // this; the .exe's own, for Explorer, is embedded by build.rs.
@@ -266,6 +269,36 @@ export component App inherits Window {
 
     /// Put up the new-project sheet, and take it down again.
     callback start-compose();
+    in-out property <bool> ai-panel: false;
+    in-out property <string> ai-key;
+    in-out property <string> ai-model;
+    in-out property <string> ai-status;
+    callback ai-config(action: string, key: string, model: string);
+    in-out property <bool> ruben-open: false;
+    // Keep resize state out of layout's own size bindings to avoid a cycle.
+    property <bool> ruben-wide: true;
+    property <bool> ruben-docked: root.ruben-open && !root.on-start && root.ruben-wide;
+    in-out property <bool> ruben-busy: false;
+    in-out property <string> ruben-input;
+    in-out property <string> ruben-reply: "Describe el cambio. Ruben-bot propondrá acciones para revisar antes de aplicarlas.";
+    in-out property <string> ruben-plan;
+    in-out property <string> ruben-snapshot;
+    in-out property <[RubenMessage]> ruben-messages;
+    callback ruben-send(text: string);
+    callback ruben-apply(plan: string, snapshot: string);
+    in-out property <bool> auto-open: false;
+    in-out property <bool> auto-busy: false;
+    in-out property <bool> auto-silence: true;
+    in-out property <bool> auto-captions: true;
+    in-out property <int> auto-preset: 1;
+    in-out property <int> auto-language: 0;
+    in-out property <int> auto-track: 1;
+    in-out property <string> auto-source;
+    in-out property <string> auto-result;
+    in-out property <string> auto-status: "Elige las acciones. El video original se conserva.";
+    callback auto-begin(source: string, silence: bool, preset: int, captions: bool, language: int, track: int);
+    callback auto-cancel();
+    callback auto-review(path: string);
     callback start-dismiss();
     callback start-name-edited(name: string);
     callback start-location-edited(path: string);
@@ -353,7 +386,7 @@ export component App inherits Window {
     /// restore rather than maximise - whichever route maximised it.
     in-out property <bool> window-maximized;
     callback window-resized();
-    changed width => { root.window-resized(); }
+    changed width => { root.ruben-wide = root.width >= 1180px; root.window-resized(); }
     // The height goes to the Panes global as well: the menus hung under the
     // pane buttons measure the room beneath them against it, and nothing
     // below the Window can read the Window.
@@ -798,15 +831,25 @@ export component App inherits Window {
                 reveal-recent(path) => { root.start-reveal-recent(path); }
                 search-edited(query) => { root.start-search-edited(query); }
                 sort-changed(sort) => { root.start-sort-changed(sort); }
-                link(name) => { root.start-link(name); }
+                link(name) => {
+                    if name == "arroba-account" {
+                        root.ai-panel = true;
+                        root.ai-status = "Consultando configuración guardada…";
+                        root.ai-config("status", "", "");
+                    }
+                    else { root.start-link(name); }
+                }
             }
 
             // Everything the workspace shows now reads the Editor global, so
             // nothing is passed to it: it is a box with four seats in it, and
             // the views inside those seats reach the state directly. See
             // editor.slint.
-            if !root.on-start && !root.phone: Workspace {
+            if !root.on-start && !root.phone: HorizontalLayout {
                 vertical-stretch: 1;
+                spacing: 0px;
+                Workspace { horizontal-stretch: 1; }
+                if root.ruben-docked: Rectangle { width: 420px; }
             }
 
             // The phone's editor reads the same global; only the shell round
@@ -1191,6 +1234,161 @@ export component App inherits Window {
     // an open menu, which is the one surface that would rather not be
     // explained at. A PopupWindow is its own layer above all of this anyway,
     // so the menus win without having to be declared after it.
+    if !root.on-start: Button {
+        x: parent.width - 160px;
+        y: 44px;
+        width: 140px;
+        height: 36px;
+        text: "Ruben-bot";
+        clicked => {
+            root.ruben-open = !root.ruben-open;
+            if root.ruben-open && !root.ruben-busy {
+                root.ruben-plan = "";
+                root.ruben-busy = true;
+                root.ruben-send("");
+            }
+        }
+    }
+    if root.ruben-open: Rectangle {
+        x: root.ruben-docked ? root.width - 420px : 0px;
+        y: root.ruben-docked ? 44px : 0px;
+        width: root.ruben-docked ? 420px : root.width;
+        height: root.ruben-docked ? root.height - 44px : root.height;
+        background: root.ruben-docked ? Theme.panel : #00000099;
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: root.ruben-docked ? 0px : (parent.height - self.height) / 2;
+            width: root.ruben-docked ? parent.width : Math.min(760px, parent.width - 32px);
+            height: root.ruben-docked ? parent.height : Math.min(760px, parent.height - 48px);
+            background: Theme.panel;
+            border-radius: 16px;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                HorizontalLayout {
+                    height: 40px; vertical-stretch: 0;
+                    Text { text: "Ruben-bot"; color: Theme.fg; font-size: 24px; horizontal-stretch: 1; }
+                    Button { text: "Cerrar"; clicked => { root.ruben-open = false; } }
+                }
+                Text { text: "Conversación guardada por proyecto en este equipo. Las propuestas se aplican solo cuando tú lo decides."; color: Theme.fg-muted; wrap: word-wrap; vertical-stretch: 0; }
+                Flickable {
+                    vertical-stretch: 1;
+                    content-height: conversation.preferred-height;
+                    content-width: self.width;
+                    conversation := VerticalLayout {
+                        width: parent.width;
+                        height: self.preferred-height;
+                        spacing: 14px;
+                        for message in root.ruben-messages: HorizontalLayout {
+                            padding-left: message.user ? 64px : 0px;
+                            padding-right: message.user ? 0px : 40px;
+                            Rectangle {
+                                background: message.user ? #304a6a : #233146;
+                                border-radius: 14px;
+                                height: bubble.preferred-height;
+                                bubble := VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 6px;
+                                    Text { text: message.user ? "Tú" : "Ruben-bot"; color: message.user ? #d7eaff : #88e0b0; font-weight: 600; }
+                                    Text { text: message.text; color: Theme.fg; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                        if root.ruben-messages.length == 0: Text {
+                            text: "Hola, soy Ruben-bot. ¿Qué quieres cambiar en este video?";
+                            color: Theme.fg; wrap: word-wrap;
+                        }
+                    }
+                }
+                Text { text: root.ruben-busy ? "Ruben-bot está trabajando…" : root.ruben-reply; color: Theme.fg-muted; wrap: word-wrap; vertical-stretch: 0; }
+                Text { text: "Al enviar, compartes la instrucción, el historial reciente y el estado del proyecto con OpenRouter. Puede consumir créditos."; color: Theme.fg-muted; font-size: 11px; wrap: word-wrap; vertical-stretch: 0; }
+                LineEdit {
+                    height: 40px; vertical-stretch: 0;
+                    text <=> root.ruben-input;
+                    placeholder-text: "Escribe tu mensaje…";
+                    enabled: !root.ruben-busy;
+                    accepted => {
+                        if !root.ruben-busy && root.ruben-input != "" {
+                            root.ruben-plan = ""; root.ruben-busy = true;
+                            root.ruben-send(root.ruben-input); root.ruben-input = "";
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 40px; vertical-stretch: 0;
+                    Button { text: root.ruben-busy ? "Consultando…" : "Enviar"; enabled: !root.ruben-busy && root.ruben-input != ""; clicked => { root.ruben-plan = ""; root.ruben-busy = true; root.ruben-send(root.ruben-input); root.ruben-input = ""; } }
+                    Button { text: "Aplicar cambios"; enabled: !root.ruben-busy && root.ruben-plan != ""; clicked => { root.ruben-apply(root.ruben-plan, root.ruben-snapshot); root.ruben-plan = ""; } }
+                }
+            }
+        }
+    }
+    if root.auto-open: Rectangle {
+        background: #00000099;
+        Rectangle {
+            width: Math.min(620px, parent.width - 32px);
+            height: Math.min(600px, parent.height - 48px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: Theme.panel;
+            border-radius: 16px;
+            VerticalLayout {
+                padding: 24px; spacing: 14px;
+                Text { text: "Preparar edición automática"; color: Theme.fg; font-size: 23px; }
+                Text { text: root.auto-source; color: Theme.fg-muted; overflow: elide; }
+                CheckBox { text: "Quitar silencios"; checked <=> root.auto-silence; enabled: !root.auto-busy; }
+                HorizontalLayout {
+                    Text { text: "Intensidad de los cortes"; color: Theme.fg; }
+                    ComboBox { model: ["Suave", "Normal", "Fuerte"]; current-index <=> root.auto-preset; enabled: !root.auto-busy && root.auto-silence; }
+                }
+                CheckBox { text: "Generar subtítulos locales"; checked <=> root.auto-captions; enabled: !root.auto-busy; }
+                HorizontalLayout {
+                    Text { text: "Idioma"; color: Theme.fg; }
+                    ComboBox { model: ["Español", "Português", "English", "Detectar"]; current-index <=> root.auto-language; enabled: !root.auto-busy && root.auto-captions; }
+                }
+                HorizontalLayout {
+                    Text { text: "Pista de audio de OBS"; color: Theme.fg; }
+                    SpinBox { minimum: 1; maximum: 8; value <=> root.auto-track; enabled: !root.auto-busy; }
+                }
+                Text { text: "Se utiliza una sola pista. Elige la que contenga la mezcla que quieres conservar."; color: Theme.fg-muted; wrap: word-wrap; }
+                Text { text: root.auto-status; color: Theme.fg; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout {
+                    Button { text: "Preparar"; enabled: !root.auto-busy && root.auto-source != ""; clicked => {
+                        root.auto-result = ""; root.auto-busy = true; root.auto-status = "Iniciando…";
+                        root.auto-begin(root.auto-source, root.auto-silence, root.auto-preset, root.auto-captions, root.auto-language, root.auto-track);
+                    } }
+                    Button { text: "Cancelar"; enabled: root.auto-busy; clicked => { root.auto-cancel(); root.auto-status = "Cancelación solicitada. Esperando a que termine la operación actual…"; } }
+                    Button { text: "Revisar montaje"; enabled: !root.auto-busy && root.auto-result != ""; clicked => { root.auto-review(root.auto-result); root.auto-open = false; } }
+                    Button { text: "Cerrar"; enabled: !root.auto-busy; clicked => { root.auto-open = false; } }
+                }
+            }
+        }
+    }
+    if root.ai-panel: Rectangle {
+        background: #00000099;
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 560px;
+            height: 500px;
+            background: Theme.panel;
+            border-radius: 16px;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text { text: "Usuario y configuración · Ruben-bot"; color: Theme.fg; font-size: 24px; }
+                Text { text: "Sesión de usuario: sin iniciar\nAcceso por correo y planes: todavía no disponibles."; color: Theme.fg-muted; wrap: word-wrap; }
+                LineEdit { placeholder-text: "API key (vacío conserva la guardada)"; input-type: password; text <=> root.ai-key; }
+                LineEdit { placeholder-text: "Identificador del modelo en OpenRouter"; text <=> root.ai-model; }
+                Text { text: "La corrección envía el texto de subtítulos a OpenRouter y al proveedor del modelo. Puede consumir créditos."; color: Theme.fg-muted; wrap: word-wrap; }
+                Text { text: root.ai-status; color: Theme.fg; wrap: word-wrap; }
+                HorizontalLayout {
+                    Button { text: "Probar conexión"; clicked => { root.ai-status = "Probando conexión…"; root.ai-config("test", root.ai-key, root.ai-model); } }
+                    Button { text: "Guardar y activar"; clicked => { root.ai-config("save", root.ai-key, root.ai-model); root.ai-key = ""; } }
+                    Button { text: "Cerrar"; clicked => { root.ai-panel = false; root.ai-key = ""; } }
+                }
+            }
+        }
+    }
     TooltipLayer {
         x: 0;
         y: 0;

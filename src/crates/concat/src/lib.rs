@@ -31,6 +31,8 @@ mod ui {
     slint::include_modules!();
 }
 
+mod automation;
+mod background;
 mod batch_volume;
 mod chips;
 mod dock;
@@ -47,6 +49,7 @@ mod keymap;
 mod meters;
 mod motion_tiles;
 mod platform;
+mod ruben_events;
 /// How a phone keeps its screen on while a job runs; see
 /// `concat_host::awake`.
 #[cfg(target_os = "android")]
@@ -846,8 +849,136 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     }
 
     let editor = app.global::<Editor>();
+    app.on_auto_begin(|source, silence, preset, captions, language, track| {
+        let presets = ["Suave", "Normal", "Fuerte"];
+        let languages = ["es", "pt", "en", "auto"];
+        crate::automation::start(
+            source.to_string(),
+            serde_json::json!({
+                "silence": silence, "preset": presets.get(preset as usize).unwrap_or(&"Normal"),
+                "captions": captions, "language": languages.get(language as usize).unwrap_or(&"es"),
+                "audioTrack": track,
+            }),
+        );
+    });
+    app.on_auto_cancel(crate::automation::cancel);
+    app.on_auto_review(on_window!(|state, path: SharedString| {
+        if state.session.is_some() {
+            state.notify(
+                "Guarda y cierra el proyecto actual antes de abrir el montaje preparado.",
+                true,
+            );
+            return;
+        }
+        if let Err(error) = state.open_project_at(path.as_str()) {
+            state.notify(&error, true);
+        }
+    }));
+    app.on_ruben_send(on_window!(|state, text: SharedString| {
+        let snapshot = state.session.as_ref().map(|s| serde_json::to_value(s.view()).unwrap_or_default());
+        let project_path = state.session.as_ref().map(|s| s.path().to_owned());
+        if !text.is_empty() {
+            let pending = text.to_string();
+            let expected_project = project_path.clone();
+            crate::host::on_ui(move |studio, app, _| {
+                use slint::Model;
+                if studio.session.as_ref().map(|s| s.path().to_owned()) != expected_project { return; }
+                let model = app.get_ruben_messages();
+                let mut rows = model.iter().collect::<Vec<_>>();
+                rows.push(ui::RubenMessage { user: true, text: pending.into() });
+                app.set_ruben_messages(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+            });
+        }
+        let request = serde_json::json!({"instruction": text.to_string(), "snapshot": snapshot, "projectPath": project_path});
+        crate::host::spawn_long(move || -> (String, String, String) {
+            use std::io::Write;
+            let snapshot = request["snapshot"].to_string();
+            let project = request["projectPath"].as_str().unwrap_or_default().to_owned();
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../arroba-editor");
+            let run = || -> Result<String, std::io::Error> {
+                let mut process = crate::background::python()
+                    .arg(root.join("ruben_plan.py")).stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn()?;
+                process.stdin.take().unwrap().write_all(request.to_string().as_bytes())?;
+                let output = process.wait_with_output()?;
+                Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+            };
+            (snapshot, project, run().unwrap_or_default())
+        }, |studio, app, _, (snapshot, project, output)| {
+            app.set_ruben_busy(false);
+            if studio.session.as_ref().map(|s| s.path()) != Some(project.as_str()) { return; }
+            app.set_ruben_snapshot(snapshot.into());
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&output) {
+                app.set_ruben_reply(value["message"].as_str().unwrap_or("Respuesta inválida").into());
+                let messages = value["history"].as_array().map(|rows| rows.iter().map(|row| ui::RubenMessage {
+                    user: row["role"].as_str() == Some("user"),
+                    text: row["content"].as_str().unwrap_or_default().into(),
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                if value["history"].is_array() {
+                    app.set_ruben_messages(std::rc::Rc::new(slint::VecModel::from(messages)).into());
+                }
+                if value["commands"].as_array().is_some_and(|c| !c.is_empty()) {
+                    app.set_ruben_plan(value["commands"].to_string().into());
+                }
+            } else { app.set_ruben_reply("No se pudo consultar Ruben-bot. Revisa Cuenta e IA.".into()); }
+        });
+    }));
+    app.on_ruben_apply(on_window!(|state, plan: SharedString, snapshot: SharedString| {
+        let current = state.session.as_ref().map(|s| serde_json::to_value(s.view()).unwrap_or_default()).unwrap_or_default();
+        if current.to_string() != snapshot.as_str() {
+            state.notify("El proyecto cambió. Pide una nueva propuesta a Ruben-bot.", true);
+            if let Some(session) = state.session.as_ref() {
+                crate::ruben_events::record(session.path().to_owned(), "stale", "La propuesta no se aplicó porque el proyecto cambió. Genera otra propuesta.".to_owned());
+            }
+            return;
+        }
+        let parsed = serde_json::from_str::<Vec<concat_project::Command>>(plan.as_str());
+        let path = state.session.as_ref().map(|s| s.path().to_owned()).unwrap_or_default();
+        match parsed {
+            Ok(commands) if !commands.is_empty() && commands.len() <= 8 => {
+                match state.apply_checked(concat_project::Command::Batch { commands }) {
+                    Ok(_) => {
+                        let after = state.session.as_ref().map(|s| serde_json::to_value(s.project()).unwrap_or_default()).unwrap_or_default();
+                        if after == current["project"] {
+                            state.notify("La propuesta no produjo cambios en el proyecto.", false);
+                            crate::ruben_events::record(path, "unchanged", "La propuesta se procesó, pero no produjo cambios.".to_owned());
+                        } else {
+                            state.notify("Cambios aplicados. Revisa el resultado; Ctrl+Z los deshace.", false);
+                            crate::ruben_events::record(path, "applied", "Propuesta aplicada al proyecto. Ctrl+Z permite deshacerla.".to_owned());
+                        }
+                    }
+                    Err(error) => {
+                        state.notify(&format!("No se aplicaron los cambios: {error}"), true);
+                        crate::ruben_events::record(path, "rejected", format!("Propuesta rechazada: {error}"));
+                    }
+                }
+            }
+            _ => state.notify("La propuesta contiene comandos inválidos y no se aplicó.", true),
+        }
+    }));
 
     // ── the launch screen ──
+    app.on_ai_config(|action, key, model| {
+        let payload = serde_json::json!({"action": action.to_string(), "key": key.to_string(), "model": model.to_string()});
+        crate::host::spawn_long(move || -> String {
+            use std::io::Write;
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../arroba-editor");
+            let run = || -> Result<String, std::io::Error> {
+                let mut process = crate::background::python()
+                    .arg(root.join("ai_settings.py")).stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn()?;
+                process.stdin.take().unwrap().write_all(payload.to_string().as_bytes())?;
+                let output = process.wait_with_output()?;
+                Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            };
+            run().unwrap_or_else(|_| "No se pudo abrir la configuración de IA.".to_owned())
+        }, |_, app, _, status| {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&status) {
+                if let Some(model) = value["model"].as_str() { app.set_ai_model(model.into()); }
+                if let Some(message) = value["status"].as_str() { app.set_ai_status(message.into()); }
+            } else { app.set_ai_status(status.into()); }
+        });
+    });
     app.on_start_compose(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Compose));
     }));

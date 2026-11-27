@@ -377,6 +377,11 @@ impl Studio {
     }
 
     pub fn apply(&mut self, command: Command) -> Option<String> {
+        self.apply_checked(command).ok().flatten()
+    }
+
+    /// Apply an edit while preserving the engine's success or failure result.
+    pub fn apply_checked(&mut self, command: Command) -> Result<Option<String>, String> {
         // An edit ends whatever burst the view was in.
         self.end_burst();
         let words = command_words(&command);
@@ -386,7 +391,10 @@ impl Studio {
         // Anything but an inspector commit ends the coalescing window; the
         // commit path sets `last_commit` again right after calling here.
         self.last_commit = None;
-        let session = self.session.as_mut()?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| "No hay un proyecto abierto.".to_owned())?;
         let chosen = matches!(command, Command::SetTimelineVideo { .. });
         let before = session.video().color_space;
         match session.apply(command) {
@@ -396,12 +404,12 @@ impl Studio {
                 if !chosen {
                     self.tell_of_hdr(before, after);
                 }
-                view.created_id
+                Ok(view.created_id)
             }
             Err(error) => {
                 log::warn!("edit: {words} was asked for and refused: {error}; nothing changed");
                 self.notify(&error, true);
-                None
+                Err(error)
             }
         }
     }
@@ -482,9 +490,15 @@ impl Studio {
         if let Some(session) = self.session.as_mut()
             && session.can_undo()
         {
+            let path = session.path().to_owned();
             session.undo();
             Asked::log(format_args!("edit: Undo"));
             self.after_change();
+            crate::ruben_events::record(
+                path,
+                "undo",
+                "Se deshizo el último cambio del editor.".to_owned(),
+            );
         } else {
             log::debug!("edit: Undo was asked for with nothing to undo");
         }
@@ -497,9 +511,15 @@ impl Studio {
         if let Some(session) = self.session.as_mut()
             && session.can_redo()
         {
+            let path = session.path().to_owned();
             session.redo();
             Asked::log(format_args!("edit: Redo"));
             self.after_change();
+            crate::ruben_events::record(
+                path,
+                "redo",
+                "Se rehízo el último cambio del editor.".to_owned(),
+            );
         } else {
             log::debug!("edit: Redo was asked for with nothing to redo");
         }

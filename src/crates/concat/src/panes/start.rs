@@ -366,6 +366,27 @@ impl StartPane {
                 };
             }
             StartMsg::Link(name) => {
+                if name == "arroba-auto" {
+                    crate::host::after_dialog(
+                        || {
+                            platform::pick_files(
+                                "Selecciona una grabación terminada",
+                                Some(("Video", &["mp4", "mkv", "mov", "webm"])),
+                            )
+                        },
+                        |_, app, _, files| {
+                            if let Some(source) = files.into_iter().next() {
+                                app.set_auto_source(source.to_string_lossy().into_owned().into());
+                                app.set_auto_result("".into());
+                                app.set_auto_status(
+                                    "Elige las acciones. El video original se conserva.".into(),
+                                );
+                                app.set_auto_open(true);
+                            }
+                        },
+                    );
+                    return;
+                }
                 if name == "shortcuts" {
                     use crate::panes::settings::{SHORTCUTS_PAGE, SettingsMsg};
                     studio.handle(crate::panes::Msg::Settings(SettingsMsg::Open));
